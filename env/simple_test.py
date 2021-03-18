@@ -10,9 +10,20 @@ from gym import spaces
 logger = logging.getLogger(__name__)
 
 
-class MazeEnv(gym.Env):
+class SimpleTestEnv(gym.Env):
 
     def __init__(self):
+        """
+        action:
+        0-> not move
+        1-> up
+        2-> right
+        3-> down
+        4-> left
+        observation:
+        (x,y)-> current position
+        :rtype: gym.Env
+        """
         self.target = (0, 0)
         self.start = (-5, -5)
         self.map_size = 10
@@ -20,8 +31,8 @@ class MazeEnv(gym.Env):
         self.coord_offset = self.map_size
 
         self.action_space = spaces.Discrete(5)
-        self.observation_space = spaces.Box(np.array([-self.map_size, self.map_size]),
-                                            np.array([-self.map_size, self.map_size]))
+        self.observation_space = spaces.Box(np.array([-self.map_size, -self.map_size]),
+                                            np.array([self.map_size, self.map_size]))
         self.state = None  # need reset before use
 
         # color BGR
@@ -84,7 +95,7 @@ class MazeEnv(gym.Env):
 
 
 if __name__ == '__main__':
-    env = gym.make('MazeEnv-v0')
+    env = gym.make('SimpleTestEnv-v0')
     env.reset()
     for _ in range(1000):
         env.render()
