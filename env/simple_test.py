@@ -70,8 +70,8 @@ class SimpleTestEnv(gym.Env):
             done = False
             reward = -0.1
 
-        # observation, reward, done
-        return self.state, reward, done
+        # observation, reward, done, info
+        return self.state, reward, done, None
 
     def reset(self):
         self.state = self.start
@@ -79,8 +79,9 @@ class SimpleTestEnv(gym.Env):
             cv2.destroyWindow("env render")
         except cv2.error:
             pass
+        return self.state
 
-    def render(self, mode="human", view_size=(400, 400), show=False):
+    def render(self, mode="human", view_size=(400, 400), show=True):
         bg = np.ones((self.map_size * 2 + 1, self.map_size * 2 + 1, 3), dtype=np.float)
         bg[self.coord_offset + 0][self.coord_offset + 0] = self._COLOR_DESTINATION
         assert self.state is not None, "Error: Call reset() first!"
@@ -89,8 +90,9 @@ class SimpleTestEnv(gym.Env):
         except IndexError:
             pass
         bg = cv2.resize(bg, view_size, interpolation=cv2.INTER_NEAREST)
-        cv2.imshow("env render", bg)
-        cv2.waitKey(1)
+        if show:
+            cv2.imshow("env render", bg)
+            cv2.waitKey(1)
         return bg
 
 
@@ -99,7 +101,7 @@ if __name__ == '__main__':
     env.reset()
     for _ in range(1000):
         env.render()
-        state, reward, done = env.step(action=1)  # take a random action
+        state, reward, done, info = env.step(action=1)  # take a random action
         sleep(1)
         print(state, reward, done)
     env.close()
