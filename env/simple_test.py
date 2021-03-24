@@ -1,3 +1,5 @@
+import random
+
 import gym
 import env
 import logging
@@ -25,14 +27,17 @@ class SimpleTestEnv(gym.Env):
         :rtype: gym.Env
         """
         self.target = (0, 0)
-        self.start = (-5, -5)
+        # self.start = (-5, -5)
         self.map_size = 10
+
+        self.step_count = 0
+        self.max_step = 20
 
         self.coord_offset = self.map_size
 
         self.action_space = spaces.Discrete(5)
-        self.observation_space = spaces.Box(np.array([-self.map_size, -self.map_size]),
-                                            np.array([self.map_size, self.map_size]))
+        self.observation_space = spaces.Box(np.array([-self.map_size, -self.map_size, 0]),
+                                            np.array([self.map_size, self.map_size, self.max_step]))
         self.state = None  # need reset before use
 
         # color BGR
@@ -45,7 +50,7 @@ class SimpleTestEnv(gym.Env):
         # 4 0 2  x->
         #   3
         assert self.action_space.contains(action)
-        x, y = self.state
+        x, y, step = self.state
 
         if action == 0:  # not move
             pass
@@ -58,12 +63,16 @@ class SimpleTestEnv(gym.Env):
         elif action == 4:
             x -= 1
 
-        self.state = np.array((x, y))
+        self.step_count += 1
+        self.state = np.array((x, y, self.step_count))
 
-        if x == 0 and y == 0:
+        if self.step_count > self.max_step:
             done = True
-            reward = 10
-        elif np.abs(x) >= self.map_size or np.abs(y) >= self.map_size:
+            reward = -30
+        elif x == 0 and y == 0:
+            done = True
+            reward = 100
+        elif np.abs(x) > self.map_size or np.abs(y) > self.map_size:
             done = True
             reward = -50
         else:
@@ -74,7 +83,10 @@ class SimpleTestEnv(gym.Env):
         return self.state, reward, done, None
 
     def reset(self):
-        self.state = self.start
+        self.step_count = 0
+        self.state = (random.randint(-self.map_size, self.map_size),
+                      random.randint(-self.map_size, self.map_size),
+                      self.step_count)
         try:
             cv2.destroyWindow("env render")
         except cv2.error:
