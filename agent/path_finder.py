@@ -36,6 +36,7 @@ class PathFinder:
             td_errors_loss_fn=tf_agents.utils.common.element_wise_squared_loss,
             train_step_counter=self._train_step_counter
         )
+        self._agent.initialize()
         self._random_policy = self.get_random_policy()
         self._reply_buffer = self._build_reply_buffer()
         self._reply_buffer_dataset = self._reply_buffer.as_dataset(sample_batch_size=self._batch_size,
@@ -73,6 +74,7 @@ class PathFinder:
     def train(self, iterations):
         self._agent.train_step_counter.assign(0)
         dataset_iterator = iter(self._reply_buffer_dataset)
+        self._env.reset()
         self.collect_data(100)
         for i in range(iterations):
             self.collect_data(1)
@@ -100,10 +102,10 @@ class PathFinder:
     def demo(self):
         policy = self._agent.policy
         stat = self._env.reset()
-        while True:
+        for _ in range(100):
             img = self._env.render()
             stat = self._env.step(policy.action(stat))
-            logger.debug("observation: %s | reward: %s", stat.observation.numpy(), stat.reward.numpy())
+            logger.debug("reward: %s", stat.reward.numpy())
             time.sleep(0.2)
 
 
@@ -123,10 +125,28 @@ def simple_test_demo():
     print(time_step)
     print(inst.get_random_policy().action(time_step))
     print(inst.metric(inst.get_random_policy()))
-    inst.train(5000)
+    inst.train(1000)
     inst.demo()
+
+
+def maze_demo():
+    maze_py_env = suite_gym.load("MazeEnv-v0")
+    step_spec = maze_py_env.reset()
+    maze_py_env.render()
+
+    logger.debug("Reset return time_step_spec: %s", step_spec)
+    logger.debug("Observation: %s", maze_py_env.time_step_spec().observation)
+    logger.debug("Reward: %s", maze_py_env.time_step_spec().reward)
+    logger.debug("Action: %s", maze_py_env.action_spec())
+
+    train_env = tf_py_environment.TFPyEnvironment(maze_py_env)
+    finder = PathFinder(train_env, 64)
+    for _ in range(100):
+        finder.train(5000)
+        finder.demo()
 
 
 if __name__ == '__main__':
     logging.basicConfig(level=logging.DEBUG)
-    simple_test_demo()
+    # simple_test_demo()
+    maze_demo()
