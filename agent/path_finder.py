@@ -1,36 +1,49 @@
 import tensorflow as tf
 import tf_agents
-import env
 import time
 import logging
-import random
+import os
 
 from tf_agents.environments import suite_gym, tf_py_environment
-from tf_agents.specs import tensor_spec
 from tf_agents.networks import sequential
 from tf_agents.agents.dqn import dqn_agent
-from tensorflow.keras import layers, initializers, optimizers
+from tensorflow.keras import layers, optimizers
 
 logger = logging.getLogger(__name__)
 
 
 class PathFinder:
-    def __init__(self,
-                 environment,
-                 batch_size,
-                 learning_rate=0.001):
-        environment: suite_gym.py_environment.PyEnvironment
-        self._env = environment
-        self._batch_size = batch_size
+    class Config:
+        def __init__(self,
+                     train_env: suite_gym.py_environment.PyEnvironment,
+                     eval_env: suite_gym.py_environment.PyEnvironment,
+                     batch_size: int,
+                     log_dir: str,
+                     data_collect_interval: int = 100,
+                     data_collect_num: int = 200,
+                     metric_interval: int = 500,
+                     learning_rate: float = 0.001):
+            self.train_env: tf_py_environment.TFPyEnvironment = tf_py_environment.TFPyEnvironment(train_env)
+            self.eval_env: tf_py_environment.TFPyEnvironment = tf_py_environment.TFPyEnvironment(eval_env)
+            self.batch_size = batch_size
+            self.lr = learning_rate
+            self.log_dir = os.path.join(log_dir, time.strftime("%Y-%m-%d-%H%M%S", time.localtime()))
+            self.data_collection_interval = data_collect_interval
+            self.data_collect_num = data_collect_num
+            self.metric_interval = metric_interval
 
-        self._num_actions = self._env.action_spec().maximum - self._env.action_spec().minimum + 1
-        self._optimizer = optimizers.Adam(learning_rate)
-        self._train_step_counter = tf.Variable(0)
+    def __init__(self, cfg: Config):
+        self._cfg = cfg
+
+        self._tf_board = tf.summary.create_file_writer(cfg.log_dir)
+        self._num_actions = cfg.train_env.action_spec().maximum - cfg.train_env.action_spec().minimum + 1
+        self._optimizer = optimizers.Adam(cfg.lr)
+        self._train_step_counter = tf.Variable(0, dtype=tf.int64)
 
         self._dqn = self._build_dqn()
         self._agent = tf_agents.agents.dqn.dqn_agent.DqnAgent(
-            time_step_spec=self._env.time_step_spec(),
-            action_spec=self._env.action_spec(),
+            time_step_spec=self._cfg.train_env.time_step_spec(),
+            action_spec=self._cfg.train_env.action_spec(),
             q_network=self._dqn,
             optimizer=self._optimizer,
             td_errors_loss_fn=tf_agents.utils.common.element_wise_squared_loss,
@@ -39,12 +52,12 @@ class PathFinder:
         self._agent.initialize()
         self._random_policy = self.get_random_policy()
         self._reply_buffer = self._build_reply_buffer()
-        self._reply_buffer_dataset = self._reply_buffer.as_dataset(sample_batch_size=self._batch_size,
+        self._reply_buffer_dataset = self._reply_buffer.as_dataset(sample_batch_size=cfg.batch_size,
                                                                    num_steps=2,
-                                                                   num_parallel_calls=1).prefetch(1)
+                                                                   num_parallel_calls=2).prefetch(100)
 
     def _build_dqn(self):
-        units = [100, 50]
+        units = [100, 100]
         dqn_layers = []
         for u in units:
             dqn_layers.append(layers.Dense(units=u, activation="relu"))
@@ -54,19 +67,18 @@ class PathFinder:
         return dqn_net
 
     def _build_reply_buffer(self):
-        logger.debug("Env.batch_size: %s", self._env.batch_size)
+        logger.debug("Env.batch_size: %s", self._cfg.train_env.batch_size)
         return tf_agents.replay_buffers.tf_uniform_replay_buffer.TFUniformReplayBuffer(
             data_spec=self._agent.collect_data_spec,
-            batch_size=self._env.batch_size,
-            max_length=10000
+            batch_size=self._cfg.train_env.batch_size,
+            max_length=20000
         )
 
-    def collect_data(self, steps):
+    def _collect_data(self, steps):
         for _ in range(steps):
-            time_step = self._env.current_time_step()
-            action = self._agent.policy.action(time_step)
-            next_time_step = self._env.step(action)
-            # self._env.render()
+            time_step = self._cfg.train_env.current_time_step()
+            action = self._agent.collect_policy.action(time_step)
+            next_time_step = self._cfg.train_env.step(action)
             traj = tf_agents.trajectories.trajectory.from_transition(time_step, action, next_time_step)
 
             self._reply_buffer.add_batch(traj)
@@ -74,79 +86,53 @@ class PathFinder:
     def train(self, iterations):
         self._agent.train_step_counter.assign(0)
         dataset_iterator = iter(self._reply_buffer_dataset)
-        self._env.reset()
-        self.collect_data(100)
+        # collect some data before training
+        self._collect_data(self._cfg.batch_size * 10)
         for i in range(iterations):
-            self.collect_data(1)
-            exp, info = next(dataset_iterator)
-            train_loss = self._agent.train(exp).loss
-            step = self._agent.train_step_counter.numpy()
-            logger.debug("Step %s, loss = %s", step, train_loss)
+            with self._tf_board.as_default(step=i):  # write summary
+                if i % self._cfg.data_collection_interval == 0:
+                    logger.debug("Collect %s sample", self._cfg.data_collect_num)
+                    self._collect_data(self._cfg.data_collect_num)
 
-    def metric(self, policy: tf_agents.policies.tf_policy.TFPolicy, episodes=20):
+                if i % self._cfg.metric_interval == 0:
+                    avg_reward = self._metric(episodes=100)
+                    logger.debug("Average reward: %s", avg_reward)
+                    tf.summary.scalar("train/avg reward", avg_reward)
+
+                exp, info = next(dataset_iterator)
+                train_loss = self._agent.train(exp).loss
+                step = self._agent.train_step_counter.numpy()
+                logger.debug("Step %s, loss = %s", step, train_loss)
+                tf.summary.scalar("train/loss", train_loss)
+
+        with self._tf_board.as_default(step=iterations):
+            avg_reward = self._metric(episodes=100)
+            logger.debug("Average reward: %s", avg_reward)
+            tf.summary.scalar("train/avg reward", avg_reward)
+
+    def _metric(self, episodes: int) -> float:
+        logger.debug("Compute average reward for %s episodes", episodes)
+
         total_return = 0.0
+        policy = self._agent.policy
         for _ in range(episodes):
-            stat = self._env.reset()
+            stat = self._cfg.train_env.reset()
             while not stat.is_last():
                 action = policy.action(stat)
-                stat = self._env.step(action)
-                total_return += stat.reward.numpy()
-                # logger.debug("[Metric] action: %s", action.action.numpy())
+                stat = self._cfg.train_env.step(action)
+                total_return += stat.reward.numpy()[0]
 
         return total_return / episodes
 
     def get_random_policy(self):
-        return tf_agents.policies.random_tf_policy.RandomTFPolicy(time_step_spec=self._env.time_step_spec(),
-                                                                  action_spec=self._env.action_spec())
+        return tf_agents.policies.random_tf_policy.RandomTFPolicy(time_step_spec=self._cfg.train_env.time_step_spec(),
+                                                                  action_spec=self._cfg.train_env.action_spec())
 
-    def demo(self):
+    def visualize_demo(self):
         policy = self._agent.policy
-        stat = self._env.reset()
-        for _ in range(100):
-            img = self._env.render()
-            stat = self._env.step(policy.action(stat))
-            logger.debug("reward: %s", stat.reward.numpy())
-            time.sleep(0.2)
-
-
-def simple_test_demo():
-    simple_py_env = suite_gym.load("SimpleTestEnv-v0")
-    step_spec = simple_py_env.reset()
-    simple_py_env.render()
-
-    logger.debug("Reset return time_step_spec: %s", step_spec)
-    logger.debug("Observation: %s", simple_py_env.time_step_spec().observation)
-    logger.debug("Reward: %s", simple_py_env.time_step_spec().reward)
-    logger.debug("Action: %s", simple_py_env.action_spec())
-
-    train_env = tf_py_environment.TFPyEnvironment(simple_py_env)
-    inst = PathFinder(train_env, 64)
-    time_step = train_env.reset()
-    print(time_step)
-    print(inst.get_random_policy().action(time_step))
-    print(inst.metric(inst.get_random_policy()))
-    inst.train(1000)
-    inst.demo()
-
-
-def maze_demo():
-    maze_py_env = suite_gym.load("MazeEnv-v0")
-    step_spec = maze_py_env.reset()
-    maze_py_env.render()
-
-    logger.debug("Reset return time_step_spec: %s", step_spec)
-    logger.debug("Observation: %s", maze_py_env.time_step_spec().observation)
-    logger.debug("Reward: %s", maze_py_env.time_step_spec().reward)
-    logger.debug("Action: %s", maze_py_env.action_spec())
-
-    train_env = tf_py_environment.TFPyEnvironment(maze_py_env)
-    finder = PathFinder(train_env, 64)
-    for _ in range(100):
-        finder.train(5000)
-        finder.demo()
-
-
-if __name__ == '__main__':
-    logging.basicConfig(level=logging.DEBUG)
-    # simple_test_demo()
-    maze_demo()
+        eval_time_step = self._cfg.eval_env.reset()
+        self._cfg.eval_env.render()
+        while not eval_time_step.is_last():
+            self._cfg.eval_env.render()
+            eval_time_step = self._cfg.eval_env.step(policy.action(eval_time_step))
+            # logger.debug("reward: %s", eval_time_step.reward.numpy())

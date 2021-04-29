@@ -27,8 +27,7 @@ class SimpleTestEnv(gym.Env):
         :rtype: gym.Env
         """
         self.target = (0, 0)
-        # self.start = (-5, -5)
-        self.map_size = 10
+        self.map_size = 100
 
         self.step_count = 0
         self.max_step = 20
@@ -77,7 +76,7 @@ class SimpleTestEnv(gym.Env):
             reward = -50
         else:
             done = False
-            reward = -0.1
+            reward = -abs(x * y) * 0.01
 
         # observation, reward, done, info
         return self.state, reward, done, None
